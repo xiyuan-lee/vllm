@@ -9,11 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Annotated
 
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
+from vllm.logger import init_logger
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
                                   RequestOutputKind, SamplingParams)
 from vllm.sequence import Logprob
 from vllm.utils import random_uuid
+
+logger = init_logger(__name__)
 
 # torch is mocked during docs generation,
 # so we have to provide the values as literals
@@ -35,8 +38,19 @@ assert _LONG_INFO.max == _MOCK_LONG_INFO.max
 
 
 class OpenAIBaseModel(BaseModel):
-    # OpenAI API does not allow extra fields
-    model_config = ConfigDict(extra="forbid")
+    # OpenAI API does allow extra fields
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def __log_extra_fields__(cls, data):
+        if isinstance(data, dict):
+            extra_fields = data.keys() - cls.model_fields.keys()
+            if extra_fields:
+                logger.warning(
+                    "The following fields were present in the request "
+                    "but ignored: %s", extra_fields)
+        return data
 
 
 class ErrorResponse(OpenAIBaseModel):
@@ -464,17 +478,17 @@ class ChatCompletionRequest(OpenAIBaseModel):
             # it matches a valid tool
             if isinstance(data["tool_choice"], dict):
                 valid_tool = False
-                specified_function = data["tool_choice"]["function"]
+                specified_function = data["tool_choice"].get("function")
                 if not specified_function:
                     raise ValueError(
-                        "Incorrectly formatted `tool_choice`. Should be like "
-                        "`{\"type\": \"function\","
+                        "Expected field `function` in `tool_choice`."
+                        " Correct usage: `{\"type\": \"function\","
                         " \"function\": {\"name\": \"my_function\"}}`")
-                specified_function_name = specified_function["name"]
+                specified_function_name = specified_function.get("name")
                 if not specified_function_name:
                     raise ValueError(
-                        "Incorrectly formatted `tool_choice`. Should be like "
-                        "`{\"type\": \"function\", "
+                        "Expected field `name` in `function` in `tool_choice`."
+                        "Correct usage: `{\"type\": \"function\", "
                         "\"function\": {\"name\": \"my_function\"}}`")
                 for tool in data["tools"]:
                     if tool["function"]["name"] == specified_function_name:
@@ -746,22 +760,6 @@ class EmbeddingChatRequest(OpenAIBaseModel):
     # doc: end-chat-embedding-pooling-params
 
     # doc: begin-chat-embedding-extra-params
-    add_generation_prompt: bool = Field(
-        default=True,
-        description=
-        ("If true, the generation prompt will be added to the chat template. "
-         "This is a parameter used by chat template in tokenizer config of the "
-         "model."),
-    )
-    continue_final_message: bool = Field(
-        default=False,
-        description=
-        ("If this is set, the chat will be formatted so that the final "
-         "message in the chat is open-ended, without any EOS tokens. The "
-         "model will continue this message rather than starting a new one. "
-         "This allows you to \"prefill\" part of the model's response for it. "
-         "Cannot be used at the same time as `add_generation_prompt`."),
-    )
     add_special_tokens: bool = Field(
         default=False,
         description=(
